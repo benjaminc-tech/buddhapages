@@ -160,7 +160,7 @@
 
     <div id="chat">
         <div class="message system">
-            This AI runs entirely in your browser. First load downloads the model (~150MB). All conversations stay private on your device.
+            This AI runs entirely in your browser. First load downloads the model (~1GB). All conversations stay private on your device.
         </div>
     </div>
 
@@ -230,7 +230,7 @@ User: `;
                 setStatus('Downloading AI model (first time only, ~150MB)...', 'loading');
                 log('Starting model download...');
 
-                generator = await pipeline('text-generation', 'Xenova/Phi-3-mini-4k-instruct', {
+                generator = await pipeline('text-generation', 'Xenova/Qwen1.5-0.5B-Chat', {
                     progress_callback: (progress) => {
                         if (progress.status === 'downloading') {
                             const pct = Math.round((progress.loaded / progress.total) * 100) || 0;
