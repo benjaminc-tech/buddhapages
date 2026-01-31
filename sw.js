@@ -1,12 +1,12 @@
-const CACHE_NAME = 'buddha-pages-v1';
+const CACHE_NAME = 'buddha-pages-v2';
 const ASSETS = [
-  '/',
-  '/index.html',
-  '/styles.css',
-  '/script.js',
-  '/manifest.json',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png'
+  './',
+  './index.html',
+  './styles.css',
+  './script.js',
+  './manifest.json',
+  './icons/icon-192.png',
+  './icons/icon-512.png'
 ];
 
 // Install - cache assets
@@ -35,6 +35,6 @@ self.addEventListener('fetch', event => {
   event.respondWith(
     caches.match(event.request)
       .then(response => response || fetch(event.request))
-      .catch(() => caches.match('/index.html'))
+      .catch(() => caches.match('./index.html'))
   );
 });

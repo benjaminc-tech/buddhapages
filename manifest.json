@@ -2,7 +2,7 @@
   "name": "Buddha Pages",
   "short_name": "Buddha",
   "description": "The Four Noble Truths and the path to liberation",
-  "start_url": "/",
+  "start_url": "./",
   "display": "standalone",
   "background_color": "#faf9f7",
   "theme_color": "#8b7355",
