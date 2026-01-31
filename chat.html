@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dharma Chat - Local AI</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg: #1a1a1a;
+            --surface: #2a2a2a;
+            --text: #e0e0e0;
+            --text-muted: #888;
+            --accent: #c9a962;
+            --user-bg: #3a3a3a;
+            --ai-bg: #2d2d2d;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            padding: 1rem;
+            text-align: center;
+            border-bottom: 1px solid #333;
+        }
+
+        h1 {
+            font-size: 1.3rem;
+            color: var(--accent);
+            margin-bottom: 0.25rem;
+        }
+
+        .subtitle {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        #status {
+            padding: 0.75rem;
+            text-align: center;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            background: var(--surface);
+        }
+
+        #status.loading { color: var(--accent); }
+        #status.ready { color: #6b8e6b; }
+        #status.error { color: #c97a7a; }
+
+        #chat {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .message {
+            max-width: 85%;
+            padding: 0.75rem 1rem;
+            border-radius: 1rem;
+            line-height: 1.5;
+        }
+
+        .message.user {
+            align-self: flex-end;
+            background: var(--user-bg);
+            border-bottom-right-radius: 0.25rem;
+        }
+
+        .message.ai {
+            align-self: flex-start;
+            background: var(--ai-bg);
+            border-bottom-left-radius: 0.25rem;
+            border-left: 2px solid var(--accent);
+        }
+
+        .message.system {
+            align-self: center;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            font-style: italic;
+        }
+
+        #input-area {
+            padding: 1rem;
+            border-top: 1px solid #333;
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        #input {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            border: 1px solid #444;
+            border-radius: 1.5rem;
+            background: var(--surface);
+            color: var(--text);
+            font-size: 1rem;
+            outline: none;
+        }
+
+        #input:focus {
+            border-color: var(--accent);
+        }
+
+        #input::placeholder {
+            color: var(--text-muted);
+        }
+
+        #send {
+            padding: 0.75rem 1.25rem;
+            background: var(--accent);
+            color: #1a1a1a;
+            border: none;
+            border-radius: 1.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        #send:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #send:hover:not(:disabled) {
+            opacity: 0.9;
+        }
+
+        .typing {
+            display: inline-flex;
+            gap: 4px;
+            padding: 0.5rem 0;
+        }
+
+        .typing span {
+            width: 8px;
+            height: 8px;
+            background: var(--accent);
+            border-radius: 50%;
+            animation: bounce 1.4s infinite;
+        }
+
+        .typing span:nth-child(2) { animation-delay: 0.2s; }
+        .typing span:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-6px); }
+        }
+
+        .progress-bar {
+            height: 4px;
+            background: #333;
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 0.5rem;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--accent);
+            transition: width 0.3s;
+        }
+
+        a {
+            color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Dharma Chat</h1>
+        <p class="subtitle">Local AI running in your browser - no data leaves your device</p>
+    </header>
+
+    <div id="status" class="loading">
+        Initializing...
+        <div class="progress-bar"><div class="progress-fill" id="progress" style="width: 0%"></div></div>
+    </div>
+
+    <div id="chat">
+        <div class="message system">
+            This AI runs entirely in your browser using WebGPU. First load downloads the model (~250MB). Responses are simpler than cloud AI but completely private.
+        </div>
+    </div>
+
+    <div id="input-area">
+        <input type="text" id="input" placeholder="Ask about Buddhism, meditation, the Four Noble Truths..." disabled>
+        <button id="send" disabled>Send</button>
+    </div>
+
+    <script type="module">
+        import { CreateMLCEngine } from "https://esm.run/@mlc-ai/web-llm";
+
+        const chat = document.getElementById('chat');
+        const input = document.getElementById('input');
+        const sendBtn = document.getElementById('send');
+        const status = document.getElementById('status');
+        const progress = document.getElementById('progress');
+
+        let engine = null;
+
+        const SYSTEM_PROMPT = `You are a calm, wise guide helping people understand Buddhism.
+You explain concepts like the Four Noble Truths, the Eightfold Path, meditation, mindfulness, and Buddhist philosophy.
+Keep responses concise but meaningful. Use simple language.
+If asked about something outside Buddhism, gently guide back to dharma teachings.
+Speak with warmth and compassion.`;
+
+        const conversation = [
+            { role: "system", content: SYSTEM_PROMPT }
+        ];
+
+        function addMessage(content, type) {
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
+            div.textContent = content;
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+            return div;
+        }
+
+        function showTyping() {
+            const div = document.createElement('div');
+            div.className = 'message ai';
+            div.id = 'typing';
+            div.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        function removeTyping() {
+            const typing = document.getElementById('typing');
+            if (typing) typing.remove();
+        }
+
+        async function initEngine() {
+            try {
+                status.textContent = 'Loading model (first time takes a minute)...';
+                status.className = 'loading';
+
+                engine = await CreateMLCEngine("Phi-3.5-mini-instruct-q4f16_1-MLC", {
+                    initProgressCallback: (info) => {
+                        if (info.progress) {
+                            progress.style.width = (info.progress * 100) + '%';
+                        }
+                        if (info.text) {
+                            status.innerHTML = info.text + '<div class="progress-bar"><div class="progress-fill" id="progress" style="width: ' + (info.progress * 100) + '%"></div></div>';
+                        }
+                    }
+                });
+
+                status.textContent = 'Ready - AI running locally in your browser';
+                status.className = 'ready';
+                input.disabled = false;
+                sendBtn.disabled = false;
+                input.focus();
+
+            } catch (err) {
+                console.error(err);
+                status.className = 'error';
+                if (err.message.includes('WebGPU')) {
+                    status.innerHTML = 'WebGPU not supported. Try Chrome or Edge. <a href="https://webgpureport.org" target="_blank">Check support</a>';
+                } else {
+                    status.textContent = 'Error loading model: ' + err.message;
+                }
+            }
+        }
+
+        async function sendMessage() {
+            const text = input.value.trim();
+            if (!text || !engine) return;
+
+            input.value = '';
+            sendBtn.disabled = true;
+            input.disabled = true;
+
+            addMessage(text, 'user');
+            conversation.push({ role: "user", content: text });
+
+            showTyping();
+
+            try {
+                const response = await engine.chat.completions.create({
+                    messages: conversation,
+                    max_tokens: 256,
+                    temperature: 0.7,
+                });
+
+                removeTyping();
+                const reply = response.choices[0].message.content;
+                addMessage(reply, 'ai');
+                conversation.push({ role: "assistant", content: reply });
+
+            } catch (err) {
+                removeTyping();
+                addMessage('Error generating response. Please try again.', 'system');
+                console.error(err);
+            }
+
+            sendBtn.disabled = false;
+            input.disabled = false;
+            input.focus();
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Check WebGPU support
+        if (!navigator.gpu) {
+            status.className = 'error';
+            status.innerHTML = 'WebGPU not supported in this browser. Try <a href="https://www.google.com/chrome/">Chrome</a> or Edge.';
+        } else {
+            initEngine();
+        }
+    </script>
+</body>
+</html>
