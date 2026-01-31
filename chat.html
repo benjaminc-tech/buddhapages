@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dharma Chat - Local AI</title>
+    <title>Dharma Chat</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -43,18 +43,6 @@
             color: var(--text-muted);
         }
 
-        #status {
-            padding: 0.75rem;
-            text-align: center;
-            font-size: 0.85rem;
-            color: var(--text-muted);
-            background: var(--surface);
-        }
-
-        #status.loading { color: var(--accent); }
-        #status.ready { color: #6b8e6b; }
-        #status.error { color: #c97a7a; }
-
         #chat {
             flex: 1;
             overflow-y: auto;
@@ -68,7 +56,7 @@
             max-width: 85%;
             padding: 0.75rem 1rem;
             border-radius: 1rem;
-            line-height: 1.5;
+            line-height: 1.6;
             white-space: pre-wrap;
         }
 
@@ -92,6 +80,10 @@
             font-size: 0.85rem;
             font-style: italic;
             text-align: center;
+        }
+
+        .message.error {
+            color: #c97a7a;
         }
 
         #input-area {
@@ -130,182 +122,154 @@
         #send:disabled { opacity: 0.5; cursor: not-allowed; }
         #send:hover:not(:disabled) { opacity: 0.9; }
 
-        .typing span {
-            display: inline-block;
-            animation: pulse 1.5s infinite;
+        .typing {
+            display: inline-flex;
+            gap: 4px;
         }
-        @keyframes pulse {
-            0%, 100% { opacity: 0.3; }
-            50% { opacity: 1; }
+        .typing span {
+            width: 6px;
+            height: 6px;
+            background: var(--accent);
+            border-radius: 50%;
+            animation: bounce 1.4s infinite;
+        }
+        .typing span:nth-child(2) { animation-delay: 0.2s; }
+        .typing span:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-6px); }
         }
 
         a { color: var(--accent); }
-
-        #error-details {
-            font-size: 0.75rem;
-            margin-top: 0.5rem;
-            color: #c97a7a;
-        }
     </style>
 </head>
 <body>
     <header>
         <h1>Dharma Chat</h1>
-        <p class="subtitle">Local AI running in your browser via WebGPU</p>
+        <p class="subtitle">Powered by Llama 3 via Groq - ask about Buddhism</p>
     </header>
-
-    <div id="status" class="loading">
-        Checking WebGPU support...
-    </div>
 
     <div id="chat">
         <div class="message system">
-            This AI runs entirely in your browser. First load downloads the model (~80MB). All conversations stay private on your device.
+            Ask questions about Buddhism, meditation, the Four Noble Truths, the Eightfold Path, or mindfulness practice.
         </div>
     </div>
 
     <div id="input-area">
-        <input type="text" id="input" placeholder="Ask about Buddhism, meditation, the dharma..." disabled>
-        <button id="send" disabled>Send</button>
+        <input type="text" id="input" placeholder="Ask about the dharma...">
+        <button id="send">Send</button>
     </div>
 
-    <script type="module">
+    <script>
+        const GROQ_API_KEY = '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';
+        const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+
+        const SYSTEM_PROMPT = `You are a calm, wise Buddhist teacher helping people understand dharma teachings.
+
+Your knowledge includes:
+- The Four Noble Truths (dukkha, samudaya, nirodha, magga)
+- The Noble Eightfold Path
+- Vipassana and meditation techniques
+- Buddhist philosophy and concepts (anatta, anicca, karma, nirvana)
+- Practical mindfulness guidance
+
+Style:
+- Warm, compassionate, patient
+- Concise but meaningful (2-4 paragraphs max)
+- Use simple language, explain Pali terms when used
+- Offer practical wisdom, not just theory
+- If asked about non-Buddhist topics, gently relate back to dharma or acknowledge your focus area`;
+
         const chat = document.getElementById('chat');
         const input = document.getElementById('input');
         const sendBtn = document.getElementById('send');
-        const status = document.getElementById('status');
 
-        let generator = null;
-
-        const BUDDHISM_CONTEXT = `You are a wise and compassionate Buddhist teacher. Answer questions about Buddhism, meditation, the Four Noble Truths, the Eightfold Path, mindfulness, and dharma teachings. Keep responses clear, warm, and concise.
-
-User: `;
-
-        function log(msg) {
-            console.log('[DharmaChat]', msg);
-        }
+        const messages = [
+            { role: 'system', content: SYSTEM_PROMPT }
+        ];
 
         function addMessage(content, type) {
             const div = document.createElement('div');
             div.className = `message ${type}`;
-            div.textContent = content;
+            if (type === 'ai' && content === '...') {
+                div.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+                div.id = 'typing';
+            } else {
+                div.textContent = content;
+            }
             chat.appendChild(div);
             chat.scrollTop = chat.scrollHeight;
             return div;
         }
 
-        function setStatus(text, type) {
-            status.textContent = text;
-            status.className = type || '';
-        }
-
-        async function initModel() {
-            // Check WebGPU
-            if (!navigator.gpu) {
-                setStatus('WebGPU not available. Try Chrome 113+ or Edge.', 'error');
-                return false;
-            }
-
-            try {
-                const adapter = await navigator.gpu.requestAdapter();
-                if (!adapter) {
-                    setStatus('No WebGPU adapter found. Your GPU may not be supported.', 'error');
-                    return false;
-                }
-                log('WebGPU adapter found');
-            } catch (e) {
-                setStatus('WebGPU error: ' + e.message, 'error');
-                return false;
-            }
-
-            setStatus('Loading Transformers.js library...', 'loading');
-
-            try {
-                // Dynamic import of transformers.js
-                const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
-
-                // Use WebGPU backend if available
-                env.backends.onnx.wasm.numThreads = 1;
-
-                setStatus('Downloading AI model (first time only, ~150MB)...', 'loading');
-                log('Starting model download...');
-
-                generator = await pipeline('text-generation', 'Xenova/distilgpt2', {
-                    progress_callback: (progress) => {
-                        if (progress.status === 'downloading') {
-                            const pct = Math.round((progress.loaded / progress.total) * 100) || 0;
-                            setStatus(`Downloading: ${progress.file} (${pct}%)`, 'loading');
-                        } else if (progress.status === 'loading') {
-                            setStatus('Loading model into memory...', 'loading');
-                        }
-                    }
-                });
-
-                log('Model loaded successfully');
-                setStatus('Ready - AI running locally', 'ready');
-                input.disabled = false;
-                sendBtn.disabled = false;
-                input.focus();
-                return true;
-
-            } catch (err) {
-                log('Error: ' + err.message);
-                console.error(err);
-                setStatus('Failed to load model. See console for details.', 'error');
-
-                const details = document.createElement('div');
-                details.id = 'error-details';
-                details.textContent = err.message;
-                status.appendChild(details);
-                return false;
-            }
+        function removeTyping() {
+            const t = document.getElementById('typing');
+            if (t) t.remove();
         }
 
         async function sendMessage() {
             const text = input.value.trim();
-            if (!text || !generator) return;
+            if (!text) return;
+
+            if (GROQ_API_KEY === 'PASTE_KEY_HERE') {
+                addMessage('API key not configured. See source code.', 'system error');
+                return;
+            }
 
             input.value = '';
             sendBtn.disabled = true;
             input.disabled = true;
 
             addMessage(text, 'user');
+            messages.push({ role: 'user', content: text });
 
-            const thinkingMsg = addMessage('Contemplating...', 'ai');
-            thinkingMsg.innerHTML = '<span class="typing"><span>Thinking</span></span>';
+            addMessage('...', 'ai');
 
             try {
-                log('Generating response...');
-                const prompt = BUDDHISM_CONTEXT + text + "\n\nTeacher:";
-
-                const result = await generator(prompt, {
-                    max_new_tokens: 100,
-                    temperature: 0.7,
-                    do_sample: true,
-                    top_p: 0.9,
+                const response = await fetch(GROQ_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${GROQ_API_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: 'llama-3.1-8b-instant',
+                        messages: messages,
+                        max_tokens: 500,
+                        temperature: 0.7
+                    })
                 });
 
-                log('Response generated');
+                removeTyping();
 
-                let response = result[0].generated_text;
-                // Extract just the teacher's response
-                response = response.split("Teacher:").pop().trim();
-                // Cut off at any "User:" to avoid continuation
-                if (response.includes("User:")) {
-                    response = response.split("User:")[0].trim();
+                if (!response.ok) {
+                    const err = await response.json();
+                    if (response.status === 429) {
+                        addMessage('Rate limit reached. Please wait a moment and try again.', 'system error');
+                    } else {
+                        addMessage(`Error: ${err.error?.message || 'Unknown error'}`, 'system error');
+                    }
+                    messages.pop(); // remove failed user message
+                    return;
                 }
 
-                thinkingMsg.textContent = response || "I am here to help you on the path. Please ask your question again.";
+                const data = await response.json();
+                const reply = data.choices[0].message.content;
+
+                addMessage(reply, 'ai');
+                messages.push({ role: 'assistant', content: reply });
 
             } catch (err) {
-                log('Generation error: ' + err.message);
+                removeTyping();
+                addMessage('Connection error. Please try again.', 'system error');
+                messages.pop();
                 console.error(err);
-                thinkingMsg.textContent = 'Error generating response. Please try again.';
+            } finally {
+                sendBtn.disabled = false;
+                input.disabled = false;
+                input.focus();
             }
-
-            sendBtn.disabled = false;
-            input.disabled = false;
-            input.focus();
         }
 
         sendBtn.addEventListener('click', sendMessage);
@@ -316,8 +280,7 @@ User: `;
             }
         });
 
-        // Start loading
-        initModel();
+        input.focus();
     </script>
 </body>
 </html>
