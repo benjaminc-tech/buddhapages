@@ -211,12 +211,23 @@
                     <div class="timer-card">
                         <h3>Meditation Timer</h3>
                         <div class="timer-display">
-                            <span id="minutes">10</span>:<span id="seconds">00</span>
+                            <div class="timer-unit">
+                                <button id="min-up" class="timer-adj">+</button>
+                                <span id="minutes">10</span>
+                                <button id="min-down" class="timer-adj">-</button>
+                                <span class="timer-label">min</span>
+                            </div>
+                            <span class="timer-colon">:</span>
+                            <div class="timer-unit">
+                                <button id="sec-up" class="timer-adj">+</button>
+                                <span id="seconds">00</span>
+                                <button id="sec-down" class="timer-adj">-</button>
+                                <span class="timer-label">sec</span>
+                            </div>
                         </div>
                         <div class="timer-controls">
-                            <button id="timer-decrease" class="timer-btn">-5</button>
                             <button id="timer-toggle" class="timer-btn primary">Start</button>
-                            <button id="timer-increase" class="timer-btn">+5</button>
+                            <button id="timer-reset" class="timer-btn">Reset</button>
                         </div>
                         <p class="timer-instruction">A bell will sound when time completes.</p>
                     </div>

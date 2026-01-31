@@ -363,11 +363,64 @@ section {
 }
 
 .timer-display {
-    font-family: var(--font-serif);
-    font-size: 4rem;
-    font-weight: 400;
-    letter-spacing: 0.05em;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: var(--spacing-sm);
     margin-bottom: var(--spacing-md);
+}
+
+.timer-unit {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.timer-unit span:not(.timer-label) {
+    font-family: var(--font-serif);
+    font-size: 3.5rem;
+    font-weight: 400;
+    line-height: 1;
+    min-width: 80px;
+}
+
+.timer-label {
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    opacity: 0.7;
+}
+
+.timer-colon {
+    font-family: var(--font-serif);
+    font-size: 3rem;
+    line-height: 1;
+    margin-top: -1.5rem;
+}
+
+.timer-adj {
+    background: rgba(255,255,255,0.2);
+    border: none;
+    color: white;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    font-size: 1.25rem;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.timer-adj:hover {
+    background: rgba(255,255,255,0.3);
+}
+
+.timer-adj:active {
+    transform: scale(0.95);
 }
 
 .timer-controls {

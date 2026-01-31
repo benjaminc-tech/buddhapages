@@ -35,8 +35,11 @@ const timerState = {
 const minutesDisplay = document.getElementById('minutes');
 const secondsDisplay = document.getElementById('seconds');
 const toggleBtn = document.getElementById('timer-toggle');
-const decreaseBtn = document.getElementById('timer-decrease');
-const increaseBtn = document.getElementById('timer-increase');
+const resetBtn = document.getElementById('timer-reset');
+const minUpBtn = document.getElementById('min-up');
+const minDownBtn = document.getElementById('min-down');
+const secUpBtn = document.getElementById('sec-up');
+const secDownBtn = document.getElementById('sec-down');
 
 function updateDisplay() {
     const mins = Math.floor(timerState.remaining / 60);
@@ -120,15 +123,38 @@ function stopTimer() {
     }
 }
 
-function adjustDuration(minutes) {
+function adjustTime(type, delta) {
     if (timerState.isRunning) return;
 
-    const newDuration = timerState.duration + (minutes * 60);
-    if (newDuration >= 60 && newDuration <= 60 * 60) { // 1 min to 60 min
+    let mins = Math.floor(timerState.duration / 60);
+    let secs = timerState.duration % 60;
+
+    if (type === 'min') {
+        mins = Math.max(0, Math.min(60, mins + delta));
+    } else {
+        secs = secs + delta;
+        if (secs >= 60) {
+            secs = 0;
+            mins = Math.min(60, mins + 1);
+        } else if (secs < 0) {
+            secs = 55;
+            mins = Math.max(0, mins - 1);
+        }
+    }
+
+    // Ensure at least 5 seconds
+    const newDuration = mins * 60 + secs;
+    if (newDuration >= 5) {
         timerState.duration = newDuration;
         timerState.remaining = newDuration;
         updateDisplay();
     }
+}
+
+function resetTimer() {
+    stopTimer();
+    timerState.remaining = timerState.duration;
+    updateDisplay();
 }
 
 toggleBtn.addEventListener('click', () => {
@@ -139,8 +165,11 @@ toggleBtn.addEventListener('click', () => {
     }
 });
 
-decreaseBtn.addEventListener('click', () => adjustDuration(-5));
-increaseBtn.addEventListener('click', () => adjustDuration(5));
+resetBtn.addEventListener('click', resetTimer);
+minUpBtn.addEventListener('click', () => adjustTime('min', 1));
+minDownBtn.addEventListener('click', () => adjustTime('min', -1));
+secUpBtn.addEventListener('click', () => adjustTime('sec', 5));
+secDownBtn.addEventListener('click', () => adjustTime('sec', -5));
 
 // ===== Smooth Scroll Enhancement =====
 document.querySelectorAll('a[href^="#"]').forEach(anchor => {
