@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WOZ</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;color:#33ff33;font:16px/1.4 monospace;padding:20px;min-height:100vh;text-shadow:0 0 5px #33ff3366}
+pre{white-space:pre-wrap}
+.blink{animation:b 1s infinite}
+@keyframes b{50%{opacity:0}}
+h1{font-size:1em;margin-bottom:1em}
+</style>
+</head>
+<body>
+<pre id="o"></pre>
+<script>
+// Woz would appreciate tight code
+const L=`
+]LIST
+
+10 REM ************************
+20 REM *   STEVE WOZNIAK      *
+30 REM *   CLASS OF '75       *
+40 REM ************************
+50 HOME
+60 PRINT "MOST LIKELY TO:"
+70 PRINT "  BUILD A COMPUTER IN"
+80 PRINT "  A GARAGE AND CHANGE"
+81 PRINT "  THE WORLD"
+90 PRINT
+100 PRINT "FAVORITE SAYING:"
+110 PRINT "  'NEVER TRUST A"
+111 PRINT "   COMPUTER YOU CAN'T"
+112 PRINT "   THROW OUT A WINDOW'"
+120 PRINT
+130 PRINT "CLUBS:"
+140 PRINT "  HOMEBREW COMPUTER CLUB"
+150 PRINT "  PHONE PHREAKS ANONYMOUS"
+160 PRINT "  DIAL-A-JOKE SOCIETY"
+170 PRINT
+180 PRINT "SUPERLATIVES:"
+190 PRINT "  - BEST HANDWRITING"
+191 PRINT "    (IN MACHINE CODE)"
+192 PRINT "  - MOST CHIPS SAVED"
+193 PRINT "  - LEAST EGO PER IQ PT"
+200 PRINT
+210 PRINT "WILL BE REMEMBERED FOR:"
+220 PRINT "  PROVING THAT ONE"
+221 PRINT "  ENGINEER WITH A"
+222 PRINT "  SOLDERING IRON CAN"
+223 PRINT "  OUTBUILD A CORPORATION"
+230 PRINT
+240 FOR I=1 TO 3
+250   PRINT CHR$(7);
+260   FOR D=1 TO 200:NEXT D
+270 NEXT I
+280 PRINT "THANKS WOZ ";
+290 PRINT "<3"
+
+]RUN
+
+MOST LIKELY TO:
+  BUILD A COMPUTER IN
+  A GARAGE AND CHANGE
+  THE WORLD
+
+FAVORITE SAYING:
+  'NEVER TRUST A
+   COMPUTER YOU CAN'T
+   THROW OUT A WINDOW'
+
+CLUBS:
+  HOMEBREW COMPUTER CLUB
+  PHONE PHREAKS ANONYMOUS
+  DIAL-A-JOKE SOCIETY
+
+SUPERLATIVES:
+  - BEST HANDWRITING
+    (IN MACHINE CODE)
+  - MOST CHIPS SAVED
+  - LEAST EGO PER IQ PT
+
+WILL BE REMEMBERED FOR:
+  PROVING THAT ONE
+  ENGINEER WITH A
+  SOLDERING IRON CAN
+  OUTBUILD A CORPORATION
+
+THANKS WOZ <3
+
+]<span class="blink">_</span>
+`;
+let i=0,o=document.getElementById('o');
+(function t(){if(i<L.length){o.innerHTML=L.slice(0,++i);setTimeout(t,Math.random()*15+5)}})()
+</script>
+</body>
+</html>
