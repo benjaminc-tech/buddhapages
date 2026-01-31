@@ -28,7 +28,8 @@ const timerState = {
     duration: 10 * 60, // 10 minutes in seconds
     remaining: 10 * 60,
     isRunning: false,
-    interval: null
+    interval: null,
+    audioContext: null
 };
 
 const minutesDisplay = document.getElementById('minutes');
@@ -44,24 +45,40 @@ function updateDisplay() {
     secondsDisplay.textContent = secs.toString().padStart(2, '0');
 }
 
+function initAudio() {
+    // Create audio context on user gesture (required for iOS)
+    if (!timerState.audioContext) {
+        timerState.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    // Resume if suspended (iOS suspends by default)
+    if (timerState.audioContext.state === 'suspended') {
+        timerState.audioContext.resume();
+    }
+}
+
 function playBell() {
-    // Create a gentle bell sound using Web Audio API
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = timerState.audioContext;
+    if (!ctx) return;
+
+    // Resume context if needed
+    if (ctx.state === 'suspended') {
+        ctx.resume();
+    }
 
     // Create multiple oscillators for a richer bell sound
     const frequencies = [528, 396, 639]; // Solfeggio frequencies
 
     frequencies.forEach((freq, index) => {
-        const oscillator = audioContext.createOscillator();
-        const gainNode = audioContext.createGain();
+        const oscillator = ctx.createOscillator();
+        const gainNode = ctx.createGain();
 
         oscillator.connect(gainNode);
-        gainNode.connect(audioContext.destination);
+        gainNode.connect(ctx.destination);
 
         oscillator.frequency.value = freq;
         oscillator.type = 'sine';
 
-        const now = audioContext.currentTime;
+        const now = ctx.currentTime;
         const startTime = now + (index * 0.1);
 
         gainNode.gain.setValueAtTime(0, startTime);
@@ -74,6 +91,9 @@ function playBell() {
 }
 
 function startTimer() {
+    // Initialize audio on user gesture (tap Start)
+    initAudio();
+
     timerState.isRunning = true;
     toggleBtn.textContent = 'Pause';
 
