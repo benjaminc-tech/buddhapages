@@ -147,7 +147,7 @@
 <body>
     <header>
         <h1>Dharma Chat</h1>
-        <p class="subtitle">Powered by Gemma 2 via Groq - ask about Buddhism</p>
+        <p class="subtitle">Powered by Llama 3.3 70B via Groq</p>
     </header>
 
     <div id="chat">
@@ -236,7 +236,7 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        model: 'gemma2-9b-it',
+                        model: 'llama-3.3-70b-versatile',
                         messages: messages,
                         max_tokens: 300,
                         temperature: 0.3
