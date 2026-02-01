@@ -77,7 +77,31 @@
             background: var(--ai-bg);
             border-bottom-left-radius: 0.25rem;
             border: none;
+            position: relative;
         }
+
+        .speak-btn {
+            position: absolute;
+            bottom: 0.5rem;
+            right: 0.5rem;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            font-size: 1.1rem;
+            opacity: 0.5;
+            transition: opacity 0.2s;
+            padding: 0.25rem;
+        }
+
+        .speak-btn:hover {
+            opacity: 1;
+        }
+
+        .speak-btn.speaking {
+            opacity: 1;
+            color: var(--accent);
+        }
+
 
         .message.system {
             align-self: center;
@@ -258,7 +282,16 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
                 div.id = 'typing';
             } else if (type === 'ai') {
                 // Parse markdown bold syntax to HTML for AI messages
-                div.innerHTML = parseMarkdownBold(content);
+                const parsedContent = parseMarkdownBold(content);
+                div.innerHTML = parsedContent;
+
+                // Add speak button for AI messages
+                const speakBtn = document.createElement('button');
+                speakBtn.className = 'speak-btn';
+                speakBtn.textContent = '🔊';
+                speakBtn.title = 'Read aloud';
+                speakBtn.addEventListener('click', () => speakText(parsedContent, speakBtn));
+                div.appendChild(speakBtn);
             } else {
                 div.textContent = content;
             }
@@ -271,6 +304,61 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
             const t = document.getElementById('typing');
             if (t) t.remove();
         }
+
+        function speakText(text, button) {
+            // If already speaking, stop it
+            if (speechSynthesis.speaking) {
+                speechSynthesis.cancel();
+                document.querySelectorAll('.speak-btn.speaking').forEach(btn => {
+                    btn.classList.remove('speaking');
+                    btn.textContent = '🔊';
+                });
+                return;
+            }
+
+            // Strip HTML tags and get plain text
+            const plainText = text.replace(/<[^>]*>/g, '');
+
+            const utterance = new SpeechSynthesisUtterance(plainText);
+
+            // Use the selected voice from dropdown
+            if (selectedVoice) {
+                utterance.voice = selectedVoice;
+            }
+            utterance.lang = 'en-US';
+
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+
+            button.classList.add('speaking');
+            button.textContent = '⏹';
+
+            utterance.onend = () => {
+                button.classList.remove('speaking');
+                button.textContent = '🔊';
+            };
+
+            utterance.onerror = () => {
+                button.classList.remove('speaking');
+                button.textContent = '🔊';
+            };
+
+            speechSynthesis.speak(utterance);
+        }
+
+        // Voice setup - use Google UK English Male
+        let selectedVoice = null;
+
+        function loadVoice() {
+            const voices = speechSynthesis.getVoices();
+            selectedVoice = voices.find(v => v.name === 'Google UK English Male') ||
+                            voices.find(v => v.name.includes('Google') && v.name.includes('UK') && v.name.includes('Male')) ||
+                            voices.find(v => v.lang === 'en-GB') ||
+                            voices.find(v => v.lang.startsWith('en'));
+        }
+
+        loadVoice();
+        speechSynthesis.onvoiceschanged = loadVoice;
 
         async function sendMessage() {
             const text = input.value.trim();
