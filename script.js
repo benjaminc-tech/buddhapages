@@ -24,20 +24,19 @@ document.querySelectorAll('.expand-btn').forEach(button => {
 });
 
 // ===== Meditation Timer =====
-// iOS suspends JavaScript when the screen locks, so no JS-based approach
-// (setInterval, Web Audio API, timeupdate callbacks) can trigger the bell.
-// Instead, the bell is baked directly into a WAV file: silence for the
-// timer duration, then the bell sound. iOS plays the full audio natively
-// through the speaker, even during screen lock, with zero JS needed.
+// Uses the Screen Wake Lock API to keep the screen on while the timer
+// runs. iOS suspends all JavaScript when the screen locks, so there is
+// no web-based way to trigger audio during sleep. Keeping the screen
+// awake sidesteps the problem entirely.
 
 const timerState = {
-    duration: 10 * 60, // 10 minutes in seconds
+    duration: 10 * 60,
     remaining: 10 * 60,
-    endTime: null, // wall-clock timestamp when timer should finish
+    endTime: null,
     isRunning: false,
     interval: null,
-    timerAudio: null, // <audio> element playing the silence+bell WAV
-    timerAudioUrl: null // blob URL to revoke on cleanup
+    audioContext: null,
+    wakeLock: null
 };
 
 const minutesDisplay = document.getElementById('minutes');
@@ -56,92 +55,77 @@ function updateDisplay() {
     secondsDisplay.textContent = secs.toString().padStart(2, '0');
 }
 
-// ===== WAV Generation =====
+// ===== Wake Lock =====
+// Keeps the screen on during meditation so JS stays active and the
+// bell can fire. Released automatically when the timer finishes.
 
-function wavWriteString(view, offset, str) {
-    for (let i = 0; i < str.length; i++) {
-        view.setUint8(offset + i, str.charCodeAt(i));
+async function requestWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    try {
+        timerState.wakeLock = await navigator.wakeLock.request('screen');
+        timerState.wakeLock.addEventListener('release', () => {
+            timerState.wakeLock = null;
+        });
+    } catch (e) {
+        // Wake Lock unavailable (low battery, unsupported browser, etc.)
     }
 }
 
-// Build a WAV file: near-silence for durationSec, then a 5-second bell.
-// The bell is part of the audio data itself, so iOS plays it natively
-// even when JavaScript is fully suspended during screen lock.
-function createTimerWav(durationSec) {
-    const sr = 8000;
-    const bellSec = 5;
-    const totalSec = durationSec + bellSec;
-    const totalSamples = Math.ceil(sr * totalSec);
-    const dataSize = totalSamples * 2; // 16-bit samples
-    const buf = new ArrayBuffer(44 + dataSize);
-    const view = new DataView(buf);
-
-    // WAV header
-    wavWriteString(view, 0, 'RIFF');
-    view.setUint32(4, 36 + dataSize, true);
-    wavWriteString(view, 8, 'WAVE');
-    wavWriteString(view, 12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true); // PCM
-    view.setUint16(22, 1, true); // mono
-    view.setUint32(24, sr, true);
-    view.setUint32(28, sr * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    wavWriteString(view, 36, 'data');
-    view.setUint32(40, dataSize, true);
-
-    // Sprinkle tiny noise through silence so iOS doesn't ignore the audio
-    const bellStart = Math.floor(sr * durationSec);
-    const noiseGap = Math.floor(sr * 0.25); // every 0.25 seconds
-    for (let i = 0; i < bellStart; i += noiseGap) {
-        view.setInt16(44 + i * 2, 1, true); // smallest non-zero value
+function releaseWakeLock() {
+    if (timerState.wakeLock) {
+        timerState.wakeLock.release();
+        timerState.wakeLock = null;
     }
+}
 
-    // Bell: three Solfeggio tones with staggered attack and exponential decay
+// ===== Audio =====
+
+function initAudio() {
+    if (!timerState.audioContext) {
+        timerState.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (timerState.audioContext.state === 'suspended') {
+        timerState.audioContext.resume();
+    }
+}
+
+function playBell() {
+    const ctx = timerState.audioContext;
+    if (!ctx) return;
+
+    if (ctx.state === 'suspended') {
+        ctx.resume().then(() => _playBellTones(ctx));
+        return;
+    }
+    _playBellTones(ctx);
+}
+
+function _playBellTones(ctx) {
     const frequencies = [528, 396, 639];
-    for (let i = bellStart; i < totalSamples; i++) {
-        const t = (i - bellStart) / sr;
-        let sample = 0;
 
-        frequencies.forEach((freq, idx) => {
-            const noteStart = idx * 0.1;
-            if (t < noteStart) return;
-            const noteTime = t - noteStart;
-            if (noteTime > 4) return;
+    frequencies.forEach((freq, index) => {
+        const oscillator = ctx.createOscillator();
+        const gainNode = ctx.createGain();
 
-            const peakGain = 0.3 - idx * 0.08;
-            let gain;
-            if (noteTime < 0.1) {
-                // Linear attack
-                gain = (noteTime / 0.1) * peakGain;
-            } else {
-                // Exponential decay from peak to 0.001 over 3.9 seconds
-                gain = peakGain * Math.pow(0.001 / peakGain, (noteTime - 0.1) / 3.9);
-            }
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
 
-            sample += Math.sin(2 * Math.PI * freq * noteTime) * gain;
-        });
+        oscillator.frequency.value = freq;
+        oscillator.type = 'sine';
 
-        sample = Math.max(-1, Math.min(1, sample));
-        view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
-    }
+        const now = ctx.currentTime;
+        const startTime = now + (index * 0.1);
 
-    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+        gainNode.gain.setValueAtTime(0, startTime);
+        gainNode.gain.linearRampToValueAtTime(0.3 - (index * 0.08), startTime + 0.1);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + 4);
+
+        oscillator.start(startTime);
+        oscillator.stop(startTime + 4);
+    });
 }
 
 // ===== Timer Logic =====
-
-function cleanupAudio() {
-    if (timerState.timerAudio) {
-        timerState.timerAudio.pause();
-        timerState.timerAudio = null;
-    }
-    if (timerState.timerAudioUrl) {
-        URL.revokeObjectURL(timerState.timerAudioUrl);
-        timerState.timerAudioUrl = null;
-    }
-}
 
 function tick() {
     if (!timerState.isRunning) return;
@@ -157,48 +141,26 @@ function tick() {
             clearInterval(timerState.interval);
             timerState.interval = null;
         }
-        // Bell is playing from the audio file — clean up once it finishes
-        if (timerState.timerAudio) {
-            timerState.timerAudio.addEventListener('ended', cleanupAudio);
-        }
+        releaseWakeLock();
+        playBell();
         timerState.remaining = timerState.duration;
         updateDisplay();
     }
 }
 
 function startTimer() {
+    initAudio();
     timerState.isRunning = true;
     timerState.endTime = Date.now() + timerState.remaining * 1000;
     toggleBtn.textContent = 'Pause';
 
-    // Generate a single WAV: silence + bell baked in
-    const url = createTimerWav(timerState.remaining);
-    const audio = new Audio(url);
-
-    // timeupdate fires while audio plays — secondary heartbeat
-    audio.addEventListener('timeupdate', () => {
-        if (timerState.isRunning) tick();
-    });
-
-    audio.play().catch(() => {});
-    timerState.timerAudio = audio;
-    timerState.timerAudioUrl = url;
-
-    // Tell iOS this is active media playback
-    if ('mediaSession' in navigator) {
-        navigator.mediaSession.metadata = new MediaMetadata({
-            title: 'Meditation Timer',
-            artist: 'Buddha Pages'
-        });
-    }
+    // Keep the screen on so JS stays active and the bell can play
+    requestWakeLock();
 
     timerState.interval = setInterval(tick, 1000);
 }
 
 function stopTimer() {
-    if (timerState.isRunning && timerState.endTime) {
-        timerState.remaining = Math.max(0, Math.ceil((timerState.endTime - Date.now()) / 1000));
-    }
     timerState.isRunning = false;
     timerState.endTime = null;
     toggleBtn.textContent = 'Start';
@@ -206,12 +168,14 @@ function stopTimer() {
         clearInterval(timerState.interval);
         timerState.interval = null;
     }
-    cleanupAudio();
+    releaseWakeLock();
 }
 
-// When page becomes visible again, recalculate and catch up
+// Re-acquire wake lock when page becomes visible again
+// (wake lock is released automatically when the user switches tabs)
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && timerState.isRunning) {
+        requestWakeLock();
         tick();
     }
 });
