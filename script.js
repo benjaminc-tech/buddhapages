@@ -24,19 +24,13 @@ document.querySelectorAll('.expand-btn').forEach(button => {
 });
 
 // ===== Meditation Timer =====
-// Uses the Screen Wake Lock API to keep the screen on while the timer
-// runs. iOS suspends all JavaScript when the screen locks, so there is
-// no web-based way to trigger audio during sleep. Keeping the screen
-// awake sidesteps the problem entirely.
-
 const timerState = {
     duration: 10 * 60,
     remaining: 10 * 60,
     endTime: null,
     isRunning: false,
     interval: null,
-    audioContext: null,
-    wakeLock: null
+    audioContext: null
 };
 
 const minutesDisplay = document.getElementById('minutes');
@@ -53,29 +47,6 @@ function updateDisplay() {
     const secs = timerState.remaining % 60;
     minutesDisplay.textContent = mins.toString().padStart(2, '0');
     secondsDisplay.textContent = secs.toString().padStart(2, '0');
-}
-
-// ===== Wake Lock =====
-// Keeps the screen on during meditation so JS stays active and the
-// bell can fire. Released automatically when the timer finishes.
-
-async function requestWakeLock() {
-    if (!('wakeLock' in navigator)) return;
-    try {
-        timerState.wakeLock = await navigator.wakeLock.request('screen');
-        timerState.wakeLock.addEventListener('release', () => {
-            timerState.wakeLock = null;
-        });
-    } catch (e) {
-        // Wake Lock unavailable (low battery, unsupported browser, etc.)
-    }
-}
-
-function releaseWakeLock() {
-    if (timerState.wakeLock) {
-        timerState.wakeLock.release();
-        timerState.wakeLock = null;
-    }
 }
 
 // ===== Audio =====
@@ -141,7 +112,6 @@ function tick() {
             clearInterval(timerState.interval);
             timerState.interval = null;
         }
-        releaseWakeLock();
         playBell();
         timerState.remaining = timerState.duration;
         updateDisplay();
@@ -153,10 +123,6 @@ function startTimer() {
     timerState.isRunning = true;
     timerState.endTime = Date.now() + timerState.remaining * 1000;
     toggleBtn.textContent = 'Pause';
-
-    // Keep the screen on so JS stays active and the bell can play
-    requestWakeLock();
-
     timerState.interval = setInterval(tick, 1000);
 }
 
@@ -168,14 +134,11 @@ function stopTimer() {
         clearInterval(timerState.interval);
         timerState.interval = null;
     }
-    releaseWakeLock();
 }
 
-// Re-acquire wake lock when page becomes visible again
-// (wake lock is released automatically when the user switches tabs)
+// Catch up the display when the page becomes visible again
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && timerState.isRunning) {
-        requestWakeLock();
         tick();
     }
 });
