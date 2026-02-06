@@ -56,6 +56,45 @@
             gap: 1rem;
         }
 
+        /* Empty state: a quiet invitation, not a blank form */
+        #empty-state {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 1.5rem;
+            min-height: 50vh;
+            transition: opacity 0.5s ease;
+        }
+
+        #empty-state.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        /* Breath dot: a subtle pulse that signals presence */
+        .breath-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
+            animation: breathe 6s ease-in-out infinite;
+        }
+
+        @keyframes breathe {
+            0%, 100% { opacity: 0.15; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(1.5); }
+        }
+
+        .empty-koan {
+            color: var(--text-muted);
+            font-size: 1.05rem;
+            text-align: center;
+            line-height: 2;
+            font-weight: 400;
+        }
+
         .message {
             max-width: 85%;
             padding: 0.75rem 1rem;
@@ -133,6 +172,17 @@
             background: var(--bg);
             display: flex;
             gap: 0.5rem;
+            transition: border-color 0.3s ease;
+        }
+
+        /* Subtle accent pulse while the model is thinking */
+        @keyframes think-pulse {
+            0%, 100% { border-top-color: var(--accent); }
+            50% { border-top-color: rgba(139, 92, 246, 0.25); }
+        }
+
+        #input-area.thinking {
+            animation: think-pulse 2.5s ease-in-out infinite;
         }
 
         #input {
@@ -145,9 +195,15 @@
             font-size: 1rem;
             outline: none;
             font-weight: 400;
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
         }
 
-        #input:focus { border-color: var(--accent); }
+        /* Soft glow on focus — accent becomes functional, not decorative */
+        #input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.08);
+        }
+
         #input::placeholder { color: var(--text-muted); font-weight: 400; }
 
         #send {
@@ -194,14 +250,16 @@
     </header>
 
     <div id="chat">
-        <div class="message system">
-            What would you like to know about Buddhism?
+        <!-- Empty state: reduces hesitation and invites presence -->
+        <div id="empty-state">
+            <div class="breath-dot"></div>
+            <p class="empty-koan">Take a breath.<br>What's arising?</p>
         </div>
     </div>
 
     <div id="input-area">
-        <input type="text" id="input" placeholder="Ask about Buddhism...">
-        <button id="send">➤</button>
+        <input type="text" id="input" placeholder="What's on your mind?">
+        <button id="send">&#10148;</button>
     </div>
 
     <script>
@@ -216,6 +274,7 @@ Rules:
 - Don't invent sutras, quotes, or stories
 - Don't claim to be enlightened or have special powers
 - Be humble and straightforward
+- Never open with pleasantries like "Great question," "It's nice to connect with you," or "Feel free to ask." Begin each response directly with the teaching.
 - Use **bold** markdown to emphasize key Buddhist terms, important concepts, and significant words (e.g., **dukkha**, **Four Noble Truths**, **meditation**, **mindfulness**)
 - End each response with a thoughtful follow-up question to encourage deeper exploration
 - Subtly mirror the user's language patterns to build rapport: match their tone (casual/formal), vocabulary level, sentence length, and communication style while staying authentic
@@ -231,6 +290,7 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
         const chat = document.getElementById('chat');
         const input = document.getElementById('input');
         const sendBtn = document.getElementById('send');
+        const inputArea = document.getElementById('input-area');
 
         const messages = [
             { role: 'system', content: SYSTEM_PROMPT }
@@ -253,18 +313,12 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
          * @returns {string} HTML string with <strong> tags, properly escaped
          */
         function parseMarkdownBold(text) {
-            // Split text on ** markers while preserving them
             const parts = text.split('**');
 
-            // Process each part: odd indices are inside bold markers, even are outside
             const processedParts = parts.map((part, index) => {
-                // Escape HTML for security
                 const escaped = escapeHtml(part);
 
-                // Odd indices (1, 3, 5...) are the text that was between ** markers
-                // Wrap them in <strong> tags
                 if (index > 0 && index % 2 === 1) {
-                    // Only create bold tag if content is not empty
                     return escaped.trim() ? `<strong>${escaped}</strong>` : escaped;
                 }
 
@@ -274,6 +328,14 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
             return processedParts.join('');
         }
 
+        // Dismiss the empty state on first interaction
+        function dismissEmptyState() {
+            const el = document.getElementById('empty-state');
+            if (!el) return;
+            el.classList.add('hidden');
+            setTimeout(() => el.remove(), 500);
+        }
+
         function addMessage(content, type) {
             const div = document.createElement('div');
             div.className = `message ${type}`;
@@ -281,14 +343,12 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
                 div.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
                 div.id = 'typing';
             } else if (type === 'ai') {
-                // Parse markdown bold syntax to HTML for AI messages
                 const parsedContent = parseMarkdownBold(content);
                 div.innerHTML = parsedContent;
 
-                // Add speak button for AI messages
                 const speakBtn = document.createElement('button');
                 speakBtn.className = 'speak-btn';
-                speakBtn.textContent = '🔊';
+                speakBtn.textContent = '\u{1F50A}';
                 speakBtn.title = 'Read aloud';
                 speakBtn.addEventListener('click', () => speakText(parsedContent, speakBtn));
                 div.appendChild(speakBtn);
@@ -306,22 +366,19 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
         }
 
         function speakText(text, button) {
-            // If already speaking, stop it
             if (speechSynthesis.speaking) {
                 speechSynthesis.cancel();
                 document.querySelectorAll('.speak-btn.speaking').forEach(btn => {
                     btn.classList.remove('speaking');
-                    btn.textContent = '🔊';
+                    btn.textContent = '\u{1F50A}';
                 });
                 return;
             }
 
-            // Strip HTML tags and get plain text
             const plainText = text.replace(/<[^>]*>/g, '');
 
             const utterance = new SpeechSynthesisUtterance(plainText);
 
-            // Use the selected voice from dropdown
             if (selectedVoice) {
                 utterance.voice = selectedVoice;
             }
@@ -331,22 +388,21 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
             utterance.pitch = 1.0;
 
             button.classList.add('speaking');
-            button.textContent = '⏹';
+            button.textContent = '\u23F9';
 
             utterance.onend = () => {
                 button.classList.remove('speaking');
-                button.textContent = '🔊';
+                button.textContent = '\u{1F50A}';
             };
 
             utterance.onerror = () => {
                 button.classList.remove('speaking');
-                button.textContent = '🔊';
+                button.textContent = '\u{1F50A}';
             };
 
             speechSynthesis.speak(utterance);
         }
 
-        // Voice setup - use Google UK English Male
         let selectedVoice = null;
 
         function loadVoice() {
@@ -364,6 +420,9 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
             const text = input.value.trim();
             if (!text) return;
 
+            // Clear the empty state on first message
+            dismissEmptyState();
+
             input.value = '';
             sendBtn.disabled = true;
             input.disabled = true;
@@ -372,6 +431,7 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
             messages.push({ role: 'user', content: text });
 
             addMessage('...', 'ai');
+            inputArea.classList.add('thinking');
 
             try {
                 const response = await fetch(API_URL, {
@@ -387,6 +447,7 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
                 });
 
                 removeTyping();
+                inputArea.classList.remove('thinking');
 
                 if (!response.ok) {
                     const err = await response.json();
@@ -395,7 +456,7 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
                     } else {
                         addMessage(`Error: ${err.error?.message || 'Unknown error'}`, 'system error');
                     }
-                    messages.pop(); // remove failed user message
+                    messages.pop();
                     return;
                 }
 
@@ -407,6 +468,7 @@ If asked something outside Buddhism, simply say you focus on dharma teachings.`;
 
             } catch (err) {
                 removeTyping();
+                inputArea.classList.remove('thinking');
                 addMessage('Connection error. Please try again.', 'system error');
                 messages.pop();
                 console.error(err);

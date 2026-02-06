@@ -1,4 +1,4 @@
-const CACHE_NAME = 'buddha-pages-v5';
+const CACHE_NAME = 'buddha-pages-v6';
 const ASSETS = [
   './',
   './index.html',
