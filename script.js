@@ -30,9 +30,11 @@ const timerState = {
     endTime: null, // wall-clock timestamp when timer should finish
     isRunning: false,
     interval: null,
-    audioContext: null,
-    keepAliveAudio: null, // silent audio loop to prevent iOS from sleeping
-    scheduledBell: null // pre-scheduled bell oscillators
+    silentWavUrl: null, // reusable blob URL for near-silent WAV
+    keepAliveEl: null, // <audio> element keeping iOS audio session alive
+    bellWavUrl: null, // pre-rendered bell sound as WAV blob URL
+    bellEl: null, // pre-created Audio element for the bell
+    bellReady: false // whether bell WAV has been pre-rendered
 };
 
 const minutesDisplay = document.getElementById('minutes');
@@ -51,138 +53,201 @@ function updateDisplay() {
     secondsDisplay.textContent = secs.toString().padStart(2, '0');
 }
 
-function initAudio() {
-    if (!timerState.audioContext) {
-        timerState.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (timerState.audioContext.state === 'suspended') {
-        timerState.audioContext.resume();
+// ===== WAV Audio Helpers =====
+// iOS suspends Web Audio API contexts when the screen locks, but keeps
+// real <audio> elements alive as background media playback. These helpers
+// generate WAV files in-browser so no server or external files are needed.
+
+function wavWriteString(view, offset, str) {
+    for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
     }
 }
 
-// Creates a near-silent audio loop that keeps iOS from suspending the page.
-// iOS keeps the browser process alive when an <audio> element is playing.
-function startKeepAlive() {
-    if (timerState.keepAliveAudio) return;
+// Create a blob URL for a short near-silent WAV (keeps iOS audio session alive)
+function createSilentWavUrl() {
+    const sampleRate = 8000;
+    const seconds = 2;
+    const numSamples = sampleRate * seconds;
+    const dataSize = numSamples * 2;
+    const buf = new ArrayBuffer(44 + dataSize);
+    const v = new DataView(buf);
 
-    const ctx = timerState.audioContext;
-    if (!ctx) return;
+    wavWriteString(v, 0, 'RIFF');
+    v.setUint32(4, 36 + dataSize, true);
+    wavWriteString(v, 8, 'WAVE');
+    wavWriteString(v, 12, 'fmt ');
+    v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true);
+    v.setUint16(22, 1, true);
+    v.setUint32(24, sampleRate, true);
+    v.setUint32(28, sampleRate * 2, true);
+    v.setUint16(32, 2, true);
+    v.setUint16(34, 16, true);
+    wavWriteString(v, 36, 'data');
+    v.setUint32(40, dataSize, true);
 
-    // Create a short buffer of near-silence (not true silence so iOS doesn't ignore it)
-    const sampleRate = ctx.sampleRate;
-    const buffer = ctx.createBuffer(1, sampleRate * 2, sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < data.length; i++) {
-        // Tiny noise - inaudible but enough to keep the audio session alive
-        data[i] = (Math.random() * 2 - 1) * 0.0001;
+    // Near-silent noise (not true silence so iOS doesn't ignore it)
+    for (let i = 0; i < numSamples; i++) {
+        v.setInt16(44 + i * 2, Math.floor((Math.random() * 2 - 1) * 10), true);
     }
 
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = true;
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
 
-    // Route through a gain node at very low volume as extra safety
-    const gain = ctx.createGain();
-    gain.gain.value = 0.01;
-    source.connect(gain);
-    gain.connect(ctx.destination);
+// Convert an AudioBuffer into a WAV Blob
+function audioBufferToWav(audioBuffer) {
+    const ch = audioBuffer.numberOfChannels;
+    const sr = audioBuffer.sampleRate;
+    const len = audioBuffer.length;
+    const dataSize = len * ch * 2;
+    const buf = new ArrayBuffer(44 + dataSize);
+    const v = new DataView(buf);
 
-    source.start(0);
-    timerState.keepAliveAudio = { source, gain };
+    wavWriteString(v, 0, 'RIFF');
+    v.setUint32(4, 36 + dataSize, true);
+    wavWriteString(v, 8, 'WAVE');
+    wavWriteString(v, 12, 'fmt ');
+    v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true);
+    v.setUint16(22, ch, true);
+    v.setUint32(24, sr, true);
+    v.setUint32(28, sr * ch * 2, true);
+    v.setUint16(32, ch * 2, true);
+    v.setUint16(34, 16, true);
+    wavWriteString(v, 36, 'data');
+    v.setUint32(40, dataSize, true);
+
+    const channels = [];
+    for (let c = 0; c < ch; c++) channels.push(audioBuffer.getChannelData(c));
+
+    let off = 44;
+    for (let i = 0; i < len; i++) {
+        for (let c = 0; c < ch; c++) {
+            const s = Math.max(-1, Math.min(1, channels[c][i]));
+            v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            off += 2;
+        }
+    }
+
+    return new Blob([buf], { type: 'audio/wav' });
+}
+
+// Pre-render the bell sound as a WAV blob using OfflineAudioContext
+function prerenderBell() {
+    const sr = 44100;
+    const dur = 5;
+    const offline = new OfflineAudioContext(1, sr * dur, sr);
+
+    [528, 396, 639].forEach((freq, i) => {
+        const osc = offline.createOscillator();
+        const gain = offline.createGain();
+        osc.connect(gain);
+        gain.connect(offline.destination);
+        osc.frequency.value = freq;
+        osc.type = 'sine';
+        const t = i * 0.1;
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.3 - i * 0.08, t + 0.1);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 4);
+        osc.start(t);
+        osc.stop(t + 4);
+    });
+
+    return offline.startRendering().then(buffer => {
+        const wav = audioBufferToWav(buffer);
+        timerState.bellWavUrl = URL.createObjectURL(wav);
+        timerState.bellReady = true;
+        // Pre-create Audio element so it's primed and ready to play
+        timerState.bellEl = new Audio(timerState.bellWavUrl);
+        timerState.bellEl.volume = 1.0;
+        timerState.bellEl.load();
+    });
+}
+
+// ===== Keep-Alive Audio =====
+// A looping <audio> element that iOS treats as real media playback,
+// preventing the page from being suspended when the screen locks.
+
+function startKeepAlive() {
+    if (timerState.keepAliveEl) return;
+
+    if (!timerState.silentWavUrl) {
+        timerState.silentWavUrl = createSilentWavUrl();
+    }
+
+    const audio = new Audio(timerState.silentWavUrl);
+    audio.loop = true;
+    audio.volume = 0.01;
+
+    // timeupdate fires ~4x/sec while audio plays — use as a heartbeat
+    // in case setInterval is throttled by the OS
+    audio.addEventListener('timeupdate', () => {
+        if (timerState.isRunning) tick();
+    });
+
+    audio.play().catch(() => {});
+    timerState.keepAliveEl = audio;
+
+    // Register media session so iOS shows this as active media
+    if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+            title: 'Meditation Timer',
+            artist: 'Buddha Pages'
+        });
+    }
 }
 
 function stopKeepAlive() {
-    if (timerState.keepAliveAudio) {
-        try {
-            timerState.keepAliveAudio.source.stop();
-        } catch (e) {}
-        timerState.keepAliveAudio = null;
+    if (timerState.keepAliveEl) {
+        timerState.keepAliveEl.pause();
+        timerState.keepAliveEl.removeAttribute('src');
+        timerState.keepAliveEl.load();
+        timerState.keepAliveEl = null;
     }
 }
 
-// Pre-schedule the bell in the AudioContext's clock.
-// The AudioContext clock runs independently from JS timers,
-// so the bell fires even if setInterval is throttled.
-function scheduleBell() {
-    const ctx = timerState.audioContext;
-    if (!ctx) return;
+// ===== Bell Playback =====
 
-    cancelScheduledBell();
-
-    const bellTime = ctx.currentTime + timerState.remaining;
-    const frequencies = [528, 396, 639]; // Solfeggio frequencies
-    const oscillators = [];
-
-    frequencies.forEach((freq, index) => {
-        const oscillator = ctx.createOscillator();
-        const gainNode = ctx.createGain();
-
-        oscillator.connect(gainNode);
-        gainNode.connect(ctx.destination);
-
-        oscillator.frequency.value = freq;
-        oscillator.type = 'sine';
-
-        const startTime = bellTime + (index * 0.1);
-
-        gainNode.gain.setValueAtTime(0, startTime);
-        gainNode.gain.linearRampToValueAtTime(0.3 - (index * 0.08), startTime + 0.1);
-        gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + 4);
-
-        oscillator.start(startTime);
-        oscillator.stop(startTime + 4);
-        oscillators.push(oscillator);
-    });
-
-    timerState.scheduledBell = oscillators;
-}
-
-function cancelScheduledBell() {
-    if (timerState.scheduledBell) {
-        timerState.scheduledBell.forEach(osc => {
-            try { osc.stop(); } catch (e) {}
-        });
-        timerState.scheduledBell = null;
-    }
-}
-
-function playBellNow() {
-    const ctx = timerState.audioContext;
-    if (!ctx) return;
-
-    if (ctx.state === 'suspended') {
-        ctx.resume().then(() => _playBellTones(ctx));
+function playBell() {
+    // Primary: play the pre-created bell audio element
+    if (timerState.bellEl) {
+        timerState.bellEl.play().catch(() => {});
+        timerState.bellEl = null;
         return;
     }
-    _playBellTones(ctx);
+    // Secondary: create new element from pre-rendered WAV URL
+    if (timerState.bellWavUrl) {
+        const a = new Audio(timerState.bellWavUrl);
+        a.volume = 1.0;
+        a.play().catch(() => {});
+        return;
+    }
+    // Fallback: Web Audio API (works when AudioContext isn't suspended)
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        [528, 396, 639].forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.frequency.value = freq;
+            osc.type = 'sine';
+            const t = ctx.currentTime + i * 0.1;
+            gain.gain.setValueAtTime(0, t);
+            gain.gain.linearRampToValueAtTime(0.3 - i * 0.08, t + 0.1);
+            gain.gain.exponentialRampToValueAtTime(0.001, t + 4);
+            osc.start(t);
+            osc.stop(t + 4);
+        });
+    } catch (e) {}
 }
 
-function _playBellTones(ctx) {
-    const frequencies = [528, 396, 639];
-
-    frequencies.forEach((freq, index) => {
-        const oscillator = ctx.createOscillator();
-        const gainNode = ctx.createGain();
-
-        oscillator.connect(gainNode);
-        gainNode.connect(ctx.destination);
-
-        oscillator.frequency.value = freq;
-        oscillator.type = 'sine';
-
-        const now = ctx.currentTime;
-        const startTime = now + (index * 0.1);
-
-        gainNode.gain.setValueAtTime(0, startTime);
-        gainNode.gain.linearRampToValueAtTime(0.3 - (index * 0.08), startTime + 0.1);
-        gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + 4);
-
-        oscillator.start(startTime);
-        oscillator.stop(startTime + 4);
-    });
-}
+// ===== Timer Logic =====
 
 function tick() {
+    if (!timerState.isRunning) return;
+
     const now = Date.now();
     timerState.remaining = Math.max(0, Math.ceil((timerState.endTime - now) / 1000));
     updateDisplay();
@@ -195,27 +260,28 @@ function tick() {
             timerState.interval = null;
         }
         stopKeepAlive();
-        // Bell was pre-scheduled via AudioContext, but play again as fallback
-        // in case AudioContext was suspended during sleep
-        playBellNow();
-        timerState.scheduledBell = null;
+        playBell();
         timerState.remaining = timerState.duration;
         updateDisplay();
     }
 }
 
 function startTimer() {
-    initAudio();
-
     timerState.isRunning = true;
     timerState.endTime = Date.now() + timerState.remaining * 1000;
     toggleBtn.textContent = 'Pause';
 
-    // Keep iOS audio session alive so the page isn't suspended
+    // Start <audio> keep-alive so iOS doesn't suspend the page
     startKeepAlive();
 
-    // Pre-schedule the bell in the AudioContext clock
-    scheduleBell();
+    // Pre-render bell sound as WAV, or re-create audio element if already rendered
+    if (!timerState.bellReady) {
+        prerenderBell();
+    } else if (timerState.bellWavUrl) {
+        timerState.bellEl = new Audio(timerState.bellWavUrl);
+        timerState.bellEl.volume = 1.0;
+        timerState.bellEl.load();
+    }
 
     timerState.interval = setInterval(tick, 1000);
 }
@@ -228,14 +294,13 @@ function stopTimer() {
         clearInterval(timerState.interval);
         timerState.interval = null;
     }
-    cancelScheduledBell();
     stopKeepAlive();
+    timerState.bellEl = null;
 }
 
 // When page becomes visible again, recalculate and catch up
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && timerState.isRunning) {
-        initAudio();
         tick();
     }
 });
