@@ -27,9 +27,12 @@ document.querySelectorAll('.expand-btn').forEach(button => {
 const timerState = {
     duration: 10 * 60, // 10 minutes in seconds
     remaining: 10 * 60,
+    endTime: null, // wall-clock timestamp when timer should finish
     isRunning: false,
     interval: null,
-    audioContext: null
+    audioContext: null,
+    keepAliveAudio: null, // silent audio loop to prevent iOS from sleeping
+    scheduledBell: null // pre-scheduled bell oscillators
 };
 
 const minutesDisplay = document.getElementById('minutes');
@@ -49,27 +52,113 @@ function updateDisplay() {
 }
 
 function initAudio() {
-    // Create audio context on user gesture (required for iOS)
     if (!timerState.audioContext) {
         timerState.audioContext = new (window.AudioContext || window.webkitAudioContext)();
     }
-    // Resume if suspended (iOS suspends by default)
     if (timerState.audioContext.state === 'suspended') {
         timerState.audioContext.resume();
     }
 }
 
-function playBell() {
+// Creates a near-silent audio loop that keeps iOS from suspending the page.
+// iOS keeps the browser process alive when an <audio> element is playing.
+function startKeepAlive() {
+    if (timerState.keepAliveAudio) return;
+
     const ctx = timerState.audioContext;
     if (!ctx) return;
 
-    // Resume context if needed
-    if (ctx.state === 'suspended') {
-        ctx.resume();
+    // Create a short buffer of near-silence (not true silence so iOS doesn't ignore it)
+    const sampleRate = ctx.sampleRate;
+    const buffer = ctx.createBuffer(1, sampleRate * 2, sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) {
+        // Tiny noise - inaudible but enough to keep the audio session alive
+        data[i] = (Math.random() * 2 - 1) * 0.0001;
     }
 
-    // Create multiple oscillators for a richer bell sound
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+
+    // Route through a gain node at very low volume as extra safety
+    const gain = ctx.createGain();
+    gain.gain.value = 0.01;
+    source.connect(gain);
+    gain.connect(ctx.destination);
+
+    source.start(0);
+    timerState.keepAliveAudio = { source, gain };
+}
+
+function stopKeepAlive() {
+    if (timerState.keepAliveAudio) {
+        try {
+            timerState.keepAliveAudio.source.stop();
+        } catch (e) {}
+        timerState.keepAliveAudio = null;
+    }
+}
+
+// Pre-schedule the bell in the AudioContext's clock.
+// The AudioContext clock runs independently from JS timers,
+// so the bell fires even if setInterval is throttled.
+function scheduleBell() {
+    const ctx = timerState.audioContext;
+    if (!ctx) return;
+
+    cancelScheduledBell();
+
+    const bellTime = ctx.currentTime + timerState.remaining;
     const frequencies = [528, 396, 639]; // Solfeggio frequencies
+    const oscillators = [];
+
+    frequencies.forEach((freq, index) => {
+        const oscillator = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
+
+        oscillator.frequency.value = freq;
+        oscillator.type = 'sine';
+
+        const startTime = bellTime + (index * 0.1);
+
+        gainNode.gain.setValueAtTime(0, startTime);
+        gainNode.gain.linearRampToValueAtTime(0.3 - (index * 0.08), startTime + 0.1);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + 4);
+
+        oscillator.start(startTime);
+        oscillator.stop(startTime + 4);
+        oscillators.push(oscillator);
+    });
+
+    timerState.scheduledBell = oscillators;
+}
+
+function cancelScheduledBell() {
+    if (timerState.scheduledBell) {
+        timerState.scheduledBell.forEach(osc => {
+            try { osc.stop(); } catch (e) {}
+        });
+        timerState.scheduledBell = null;
+    }
+}
+
+function playBellNow() {
+    const ctx = timerState.audioContext;
+    if (!ctx) return;
+
+    if (ctx.state === 'suspended') {
+        ctx.resume().then(() => _playBellTones(ctx));
+        return;
+    }
+    _playBellTones(ctx);
+}
+
+function _playBellTones(ctx) {
+    const frequencies = [528, 396, 639];
 
     frequencies.forEach((freq, index) => {
         const oscillator = ctx.createOscillator();
@@ -93,35 +182,63 @@ function playBell() {
     });
 }
 
+function tick() {
+    const now = Date.now();
+    timerState.remaining = Math.max(0, Math.ceil((timerState.endTime - now) / 1000));
+    updateDisplay();
+
+    if (timerState.remaining <= 0) {
+        timerState.isRunning = false;
+        toggleBtn.textContent = 'Start';
+        if (timerState.interval) {
+            clearInterval(timerState.interval);
+            timerState.interval = null;
+        }
+        stopKeepAlive();
+        // Bell was pre-scheduled via AudioContext, but play again as fallback
+        // in case AudioContext was suspended during sleep
+        playBellNow();
+        timerState.scheduledBell = null;
+        timerState.remaining = timerState.duration;
+        updateDisplay();
+    }
+}
+
 function startTimer() {
-    // Initialize audio on user gesture (tap Start)
     initAudio();
 
     timerState.isRunning = true;
+    timerState.endTime = Date.now() + timerState.remaining * 1000;
     toggleBtn.textContent = 'Pause';
 
-    timerState.interval = setInterval(() => {
-        timerState.remaining--;
-        updateDisplay();
+    // Keep iOS audio session alive so the page isn't suspended
+    startKeepAlive();
 
-        if (timerState.remaining <= 0) {
-            stopTimer();
-            playBell();
-            toggleBtn.textContent = 'Start';
-            timerState.remaining = timerState.duration;
-            updateDisplay();
-        }
-    }, 1000);
+    // Pre-schedule the bell in the AudioContext clock
+    scheduleBell();
+
+    timerState.interval = setInterval(tick, 1000);
 }
 
 function stopTimer() {
     timerState.isRunning = false;
+    timerState.endTime = null;
     toggleBtn.textContent = 'Start';
     if (timerState.interval) {
         clearInterval(timerState.interval);
         timerState.interval = null;
     }
+    cancelScheduledBell();
+    stopKeepAlive();
 }
+
+// When page becomes visible again, recalculate and catch up
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && timerState.isRunning) {
+        initAudio();
+        tick();
+    }
+});
 
 function adjustTime(type, delta) {
     if (timerState.isRunning) return;
