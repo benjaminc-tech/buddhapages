@@ -24,17 +24,20 @@ document.querySelectorAll('.expand-btn').forEach(button => {
 });
 
 // ===== Meditation Timer =====
+// iOS suspends JavaScript when the screen locks, so no JS-based approach
+// (setInterval, Web Audio API, timeupdate callbacks) can trigger the bell.
+// Instead, the bell is baked directly into a WAV file: silence for the
+// timer duration, then the bell sound. iOS plays the full audio natively
+// through the speaker, even during screen lock, with zero JS needed.
+
 const timerState = {
     duration: 10 * 60, // 10 minutes in seconds
     remaining: 10 * 60,
     endTime: null, // wall-clock timestamp when timer should finish
     isRunning: false,
     interval: null,
-    silentWavUrl: null, // reusable blob URL for near-silent WAV
-    keepAliveEl: null, // <audio> element keeping iOS audio session alive
-    bellWavUrl: null, // pre-rendered bell sound as WAV blob URL
-    bellEl: null, // pre-created Audio element for the bell
-    bellReady: false // whether bell WAV has been pre-rendered
+    timerAudio: null, // <audio> element playing the silence+bell WAV
+    timerAudioUrl: null // blob URL to revoke on cleanup
 };
 
 const minutesDisplay = document.getElementById('minutes');
@@ -53,10 +56,7 @@ function updateDisplay() {
     secondsDisplay.textContent = secs.toString().padStart(2, '0');
 }
 
-// ===== WAV Audio Helpers =====
-// iOS suspends Web Audio API contexts when the screen locks, but keeps
-// real <audio> elements alive as background media playback. These helpers
-// generate WAV files in-browser so no server or external files are needed.
+// ===== WAV Generation =====
 
 function wavWriteString(view, offset, str) {
     for (let i = 0; i < str.length; i++) {
@@ -64,186 +64,84 @@ function wavWriteString(view, offset, str) {
     }
 }
 
-// Create a blob URL for a short near-silent WAV (keeps iOS audio session alive)
-function createSilentWavUrl() {
-    const sampleRate = 8000;
-    const seconds = 2;
-    const numSamples = sampleRate * seconds;
-    const dataSize = numSamples * 2;
+// Build a WAV file: near-silence for durationSec, then a 5-second bell.
+// The bell is part of the audio data itself, so iOS plays it natively
+// even when JavaScript is fully suspended during screen lock.
+function createTimerWav(durationSec) {
+    const sr = 8000;
+    const bellSec = 5;
+    const totalSec = durationSec + bellSec;
+    const totalSamples = Math.ceil(sr * totalSec);
+    const dataSize = totalSamples * 2; // 16-bit samples
     const buf = new ArrayBuffer(44 + dataSize);
-    const v = new DataView(buf);
+    const view = new DataView(buf);
 
-    wavWriteString(v, 0, 'RIFF');
-    v.setUint32(4, 36 + dataSize, true);
-    wavWriteString(v, 8, 'WAVE');
-    wavWriteString(v, 12, 'fmt ');
-    v.setUint32(16, 16, true);
-    v.setUint16(20, 1, true);
-    v.setUint16(22, 1, true);
-    v.setUint32(24, sampleRate, true);
-    v.setUint32(28, sampleRate * 2, true);
-    v.setUint16(32, 2, true);
-    v.setUint16(34, 16, true);
-    wavWriteString(v, 36, 'data');
-    v.setUint32(40, dataSize, true);
+    // WAV header
+    wavWriteString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    wavWriteString(view, 8, 'WAVE');
+    wavWriteString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // mono
+    view.setUint32(24, sr, true);
+    view.setUint32(28, sr * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    wavWriteString(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
 
-    // Near-silent noise (not true silence so iOS doesn't ignore it)
-    for (let i = 0; i < numSamples; i++) {
-        v.setInt16(44 + i * 2, Math.floor((Math.random() * 2 - 1) * 10), true);
+    // Sprinkle tiny noise through silence so iOS doesn't ignore the audio
+    const bellStart = Math.floor(sr * durationSec);
+    const noiseGap = Math.floor(sr * 0.25); // every 0.25 seconds
+    for (let i = 0; i < bellStart; i += noiseGap) {
+        view.setInt16(44 + i * 2, 1, true); // smallest non-zero value
+    }
+
+    // Bell: three Solfeggio tones with staggered attack and exponential decay
+    const frequencies = [528, 396, 639];
+    for (let i = bellStart; i < totalSamples; i++) {
+        const t = (i - bellStart) / sr;
+        let sample = 0;
+
+        frequencies.forEach((freq, idx) => {
+            const noteStart = idx * 0.1;
+            if (t < noteStart) return;
+            const noteTime = t - noteStart;
+            if (noteTime > 4) return;
+
+            const peakGain = 0.3 - idx * 0.08;
+            let gain;
+            if (noteTime < 0.1) {
+                // Linear attack
+                gain = (noteTime / 0.1) * peakGain;
+            } else {
+                // Exponential decay from peak to 0.001 over 3.9 seconds
+                gain = peakGain * Math.pow(0.001 / peakGain, (noteTime - 0.1) / 3.9);
+            }
+
+            sample += Math.sin(2 * Math.PI * freq * noteTime) * gain;
+        });
+
+        sample = Math.max(-1, Math.min(1, sample));
+        view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
     }
 
     return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 }
 
-// Convert an AudioBuffer into a WAV Blob
-function audioBufferToWav(audioBuffer) {
-    const ch = audioBuffer.numberOfChannels;
-    const sr = audioBuffer.sampleRate;
-    const len = audioBuffer.length;
-    const dataSize = len * ch * 2;
-    const buf = new ArrayBuffer(44 + dataSize);
-    const v = new DataView(buf);
-
-    wavWriteString(v, 0, 'RIFF');
-    v.setUint32(4, 36 + dataSize, true);
-    wavWriteString(v, 8, 'WAVE');
-    wavWriteString(v, 12, 'fmt ');
-    v.setUint32(16, 16, true);
-    v.setUint16(20, 1, true);
-    v.setUint16(22, ch, true);
-    v.setUint32(24, sr, true);
-    v.setUint32(28, sr * ch * 2, true);
-    v.setUint16(32, ch * 2, true);
-    v.setUint16(34, 16, true);
-    wavWriteString(v, 36, 'data');
-    v.setUint32(40, dataSize, true);
-
-    const channels = [];
-    for (let c = 0; c < ch; c++) channels.push(audioBuffer.getChannelData(c));
-
-    let off = 44;
-    for (let i = 0; i < len; i++) {
-        for (let c = 0; c < ch; c++) {
-            const s = Math.max(-1, Math.min(1, channels[c][i]));
-            v.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-            off += 2;
-        }
-    }
-
-    return new Blob([buf], { type: 'audio/wav' });
-}
-
-// Pre-render the bell sound as a WAV blob using OfflineAudioContext
-function prerenderBell() {
-    const sr = 44100;
-    const dur = 5;
-    const offline = new OfflineAudioContext(1, sr * dur, sr);
-
-    [528, 396, 639].forEach((freq, i) => {
-        const osc = offline.createOscillator();
-        const gain = offline.createGain();
-        osc.connect(gain);
-        gain.connect(offline.destination);
-        osc.frequency.value = freq;
-        osc.type = 'sine';
-        const t = i * 0.1;
-        gain.gain.setValueAtTime(0, t);
-        gain.gain.linearRampToValueAtTime(0.3 - i * 0.08, t + 0.1);
-        gain.gain.exponentialRampToValueAtTime(0.001, t + 4);
-        osc.start(t);
-        osc.stop(t + 4);
-    });
-
-    return offline.startRendering().then(buffer => {
-        const wav = audioBufferToWav(buffer);
-        timerState.bellWavUrl = URL.createObjectURL(wav);
-        timerState.bellReady = true;
-        // Pre-create Audio element so it's primed and ready to play
-        timerState.bellEl = new Audio(timerState.bellWavUrl);
-        timerState.bellEl.volume = 1.0;
-        timerState.bellEl.load();
-    });
-}
-
-// ===== Keep-Alive Audio =====
-// A looping <audio> element that iOS treats as real media playback,
-// preventing the page from being suspended when the screen locks.
-
-function startKeepAlive() {
-    if (timerState.keepAliveEl) return;
-
-    if (!timerState.silentWavUrl) {
-        timerState.silentWavUrl = createSilentWavUrl();
-    }
-
-    const audio = new Audio(timerState.silentWavUrl);
-    audio.loop = true;
-    audio.volume = 0.01;
-
-    // timeupdate fires ~4x/sec while audio plays — use as a heartbeat
-    // in case setInterval is throttled by the OS
-    audio.addEventListener('timeupdate', () => {
-        if (timerState.isRunning) tick();
-    });
-
-    audio.play().catch(() => {});
-    timerState.keepAliveEl = audio;
-
-    // Register media session so iOS shows this as active media
-    if ('mediaSession' in navigator) {
-        navigator.mediaSession.metadata = new MediaMetadata({
-            title: 'Meditation Timer',
-            artist: 'Buddha Pages'
-        });
-    }
-}
-
-function stopKeepAlive() {
-    if (timerState.keepAliveEl) {
-        timerState.keepAliveEl.pause();
-        timerState.keepAliveEl.removeAttribute('src');
-        timerState.keepAliveEl.load();
-        timerState.keepAliveEl = null;
-    }
-}
-
-// ===== Bell Playback =====
-
-function playBell() {
-    // Primary: play the pre-created bell audio element
-    if (timerState.bellEl) {
-        timerState.bellEl.play().catch(() => {});
-        timerState.bellEl = null;
-        return;
-    }
-    // Secondary: create new element from pre-rendered WAV URL
-    if (timerState.bellWavUrl) {
-        const a = new Audio(timerState.bellWavUrl);
-        a.volume = 1.0;
-        a.play().catch(() => {});
-        return;
-    }
-    // Fallback: Web Audio API (works when AudioContext isn't suspended)
-    try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        [528, 396, 639].forEach((freq, i) => {
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.frequency.value = freq;
-            osc.type = 'sine';
-            const t = ctx.currentTime + i * 0.1;
-            gain.gain.setValueAtTime(0, t);
-            gain.gain.linearRampToValueAtTime(0.3 - i * 0.08, t + 0.1);
-            gain.gain.exponentialRampToValueAtTime(0.001, t + 4);
-            osc.start(t);
-            osc.stop(t + 4);
-        });
-    } catch (e) {}
-}
-
 // ===== Timer Logic =====
+
+function cleanupAudio() {
+    if (timerState.timerAudio) {
+        timerState.timerAudio.pause();
+        timerState.timerAudio = null;
+    }
+    if (timerState.timerAudioUrl) {
+        URL.revokeObjectURL(timerState.timerAudioUrl);
+        timerState.timerAudioUrl = null;
+    }
+}
 
 function tick() {
     if (!timerState.isRunning) return;
@@ -259,8 +157,10 @@ function tick() {
             clearInterval(timerState.interval);
             timerState.interval = null;
         }
-        stopKeepAlive();
-        playBell();
+        // Bell is playing from the audio file — clean up once it finishes
+        if (timerState.timerAudio) {
+            timerState.timerAudio.addEventListener('ended', cleanupAudio);
+        }
         timerState.remaining = timerState.duration;
         updateDisplay();
     }
@@ -271,22 +171,34 @@ function startTimer() {
     timerState.endTime = Date.now() + timerState.remaining * 1000;
     toggleBtn.textContent = 'Pause';
 
-    // Start <audio> keep-alive so iOS doesn't suspend the page
-    startKeepAlive();
+    // Generate a single WAV: silence + bell baked in
+    const url = createTimerWav(timerState.remaining);
+    const audio = new Audio(url);
 
-    // Pre-render bell sound as WAV, or re-create audio element if already rendered
-    if (!timerState.bellReady) {
-        prerenderBell();
-    } else if (timerState.bellWavUrl) {
-        timerState.bellEl = new Audio(timerState.bellWavUrl);
-        timerState.bellEl.volume = 1.0;
-        timerState.bellEl.load();
+    // timeupdate fires while audio plays — secondary heartbeat
+    audio.addEventListener('timeupdate', () => {
+        if (timerState.isRunning) tick();
+    });
+
+    audio.play().catch(() => {});
+    timerState.timerAudio = audio;
+    timerState.timerAudioUrl = url;
+
+    // Tell iOS this is active media playback
+    if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+            title: 'Meditation Timer',
+            artist: 'Buddha Pages'
+        });
     }
 
     timerState.interval = setInterval(tick, 1000);
 }
 
 function stopTimer() {
+    if (timerState.isRunning && timerState.endTime) {
+        timerState.remaining = Math.max(0, Math.ceil((timerState.endTime - Date.now()) / 1000));
+    }
     timerState.isRunning = false;
     timerState.endTime = null;
     toggleBtn.textContent = 'Start';
@@ -294,8 +206,7 @@ function stopTimer() {
         clearInterval(timerState.interval);
         timerState.interval = null;
     }
-    stopKeepAlive();
-    timerState.bellEl = null;
+    cleanupAudio();
 }
 
 // When page becomes visible again, recalculate and catch up
@@ -324,7 +235,6 @@ function adjustTime(type, delta) {
         }
     }
 
-    // Ensure at least 5 seconds
     const newDuration = mins * 60 + secs;
     if (newDuration >= 5) {
         timerState.duration = newDuration;
@@ -385,7 +295,6 @@ const observer = new IntersectionObserver((entries) => {
     });
 }, observerOptions);
 
-// Apply to elements that should animate on scroll
 document.querySelectorAll('.wheel-section').forEach(el => {
     el.style.opacity = '0';
     el.style.transform = 'translateY(30px)';
